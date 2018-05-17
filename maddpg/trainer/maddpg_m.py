@@ -28,25 +28,31 @@ def make_update_exp(vals, target_vals):
     return U.function([], [], updates=[expression])
 
 def p_train(make_obs_ph_n, act_space_n, p_index, p_func, q_func, shared_CNN,optimizer, make_obs_map_ph_n, grad_norm_clipping=None, local_q_func=False, num_units=64, scope="trainer", reuse=None):
-    with tf.variable_scope(scope, reuse=reuse):
+    act_pdtype_n = [make_pdtype(act_space) for act_space in act_space_n]
+
+    # set up placeholders
+    obs_ph_n = make_obs_ph_n
+    act_ph_n = [act_pdtype_n[i].sample_placeholder([None], name="action"+str(i)) for i in range(len(act_space_n))]
+
+    obs_map_ph_n=make_obs_map_ph_n
+    p_input = obs_ph_n[p_index]
+    p_map_input=obs_map_ph_n[p_index]
+
+
+    
+    with tf.variable_scope(scope, reuse=None):
         # create distribtuions
-        act_pdtype_n = [make_pdtype(act_space) for act_space in act_space_n]
+        
 
-        # set up placeholders
-        obs_ph_n = make_obs_ph_n
-        act_ph_n = [act_pdtype_n[i].sample_placeholder([None], name="action"+str(i)) for i in range(len(act_space_n))]
-
-        obs_map_ph_n=make_obs_map_ph_n
-        p_input = obs_ph_n[p_index]
-        p_map_input=obs_map_ph_n[p_index]
-
-        num_adversary=2
-        if p_index<num_adversary:
-            map_context_input=shared_CNN(p_map_input,scope="CNN-adv")
-            CNN_vars=U.scope_vars("CNN-adv")
-        else:
-            map_context_input=shared_CNN(p_map_input,scope="CNN-age")
-            CNN_vars=U.scope_vars("CNN-age")
+        map_context_input=shared_CNN(p_map_input,p_index,scope="CNN")
+        CNN_vars=U.scope_vars(U.absolute_scope_name("CNN"))
+        # num_adversary=2
+        # if p_index<num_adversary:
+        #     map_context_input=shared_CNN(p_map_input,scope="CNN-adv")
+        #     CNN_vars=U.scope_vars("CNN-adv")
+        # else:
+        #     map_context_input=shared_CNN(p_map_input,scope="CNN-age")
+        #     CNN_vars=U.scope_vars("CNN-age")
         p = p_func(tf.concat([p_input,map_context_input],1), int(act_pdtype_n[p_index].param_shape()[0]), scope="p_func", num_units=num_units)
         p_func_vars = U.scope_vars(U.absolute_scope_name("p_func"))
         
@@ -60,22 +66,36 @@ def p_train(make_obs_ph_n, act_space_n, p_index, p_func, q_func, shared_CNN,opti
         act_input_n = act_ph_n + []
         act_input_n[p_index] = act_pd.sample() #act_pd.mode() #
         q_input = tf.concat(obs_ph_n + act_input_n, 1)
-        for i in range(len(obs_ph_n)):
-            if i<num_adversary:
-                q_input=tf.concat([q_input,shared_CNN(obs_map_ph_n[i],scope="CNN-adv")],1)
-            else:
-                q_input=tf.concat([q_input,shared_CNN(obs_map_ph_n[i],scope="CNN-age")],1)
+    
+    for i in range(len(obs_ph_n)):
+        q_input=tf.concat([q_input,shared_CNN(obs_map_ph_n[i],i,scope="agent_"+str(i)+"/CNN")],1)
+        # for i in range(len(obs_ph_n)):
+        #     if i<num_adversary:
+        #         q_input=tf.concat([q_input,shared_CNN(obs_map_ph_n[i],scope="CNN-adv")],1)
+        #     else:
+        #         q_input=tf.concat([q_input,shared_CNN(obs_map_ph_n[i],scope="CNN-age")],1)
+
+    # for i in range(len(obs_ph_n)):
+    #     q_input=tf.concat([q_input,shared_CNN(obs_map_ph_n[i],i,scope="agent_"+str(i)+"/CNN")],1)
+    
+    # with tf.variable_scope(scope, reuse=None):
+    
+    with tf.variable_scope(scope, reuse=None):
         if local_q_func:
             q_input = tf.concat([obs_ph_n[p_index], act_input_n[p_index]], 1)
         q = q_func(q_input, 1, scope="q_func", reuse=True, num_units=num_units)[:,0]
+
         pg_loss = -tf.reduce_mean(q)
 
         loss = pg_loss + p_reg * 1e-3
 
-        optimize_expr = U.minimize_and_clip(optimizer, loss, p_func_vars+CNN_vars, grad_norm_clipping)
-
+        optimize_expr = U.minimize_and_clip(optimizer, loss, p_func_vars, grad_norm_clipping)
+    
+    with tf.variable_scope(scope, reuse=True):
+        optimize_expr2 = U.minimize_and_clip(optimizer, loss, CNN_vars, grad_norm_clipping)
         # Create callable functions
-        train = U.function(inputs=obs_ph_n + act_ph_n+obs_map_ph_n, outputs=loss, updates=[optimize_expr])
+    with tf.variable_scope(scope, reuse=None):
+        train = U.function(inputs=obs_ph_n + act_ph_n+obs_map_ph_n, outputs=loss, updates=[optimize_expr,optimize_expr2])
         act = U.function(inputs=[obs_ph_n[p_index],obs_map_ph_n[p_index]], outputs=act_sample)
         p_values = U.function([obs_ph_n[p_index],obs_map_ph_n[p_index]], p)
         #p_values = U.function([obs_ph_n[p_index]], p)
@@ -91,29 +111,33 @@ def p_train(make_obs_ph_n, act_space_n, p_index, p_func, q_func, shared_CNN,opti
         return act, train, update_target_p, {'p_values': p_values, 'target_act': target_act}
 
 def q_train(make_obs_ph_n, act_space_n, q_index, q_func, shared_CNN,optimizer, make_obs_map_ph_n, grad_norm_clipping=None, local_q_func=False, scope="trainer", reuse=None, num_units=64):
+    # with tf.variable_scope(scope, reuse=reuse):
+    # create distribtuions
+    act_pdtype_n = [make_pdtype(act_space) for act_space in act_space_n]
+
+    # set up placeholders
+    obs_ph_n = make_obs_ph_n
+    obs_map_ph_n=make_obs_map_ph_n
+    act_ph_n = [act_pdtype_n[i].sample_placeholder([None], name="action"+str(i)) for i in range(len(act_space_n))]
+    target_ph = tf.placeholder(tf.float32, [None], name="target")
+
+    q_input = tf.concat(obs_ph_n + act_ph_n, 1)
+    # num_adversary=2
+    # for i in range(len(obs_ph_n)):
+    #     if i<num_adversary:
+    #         q_input=tf.concat([q_input,shared_CNN(obs_map_ph_n[i],scope="CNN-adv")],1)
+    #     else:
+    #         q_input=tf.concat([q_input,shared_CNN(obs_map_ph_n[i],scope="CNN-age")],1)
+    for i in range(len(obs_ph_n)):
+        q_input=tf.concat([q_input,shared_CNN(obs_map_ph_n[i],i,scope="agent_"+str(i)+"/CNN")],1)
+
     with tf.variable_scope(scope, reuse=reuse):
-        # create distribtuions
-        act_pdtype_n = [make_pdtype(act_space) for act_space in act_space_n]
-
-        # set up placeholders
-        obs_ph_n = make_obs_ph_n
-        obs_map_ph_n=make_obs_map_ph_n
-        act_ph_n = [act_pdtype_n[i].sample_placeholder([None], name="action"+str(i)) for i in range(len(act_space_n))]
-        target_ph = tf.placeholder(tf.float32, [None], name="target")
-
-        q_input = tf.concat(obs_ph_n + act_ph_n, 1)
-        num_adversary=2
-        for i in range(len(obs_ph_n)):
-            if i<num_adversary:
-                q_input=tf.concat([q_input,shared_CNN(obs_map_ph_n[i],scope="CNN-adv")],1)
-            else:
-                q_input=tf.concat([q_input,shared_CNN(obs_map_ph_n[i],scope="CNN-age")],1)
         if local_q_func:
             q_input = tf.concat([obs_ph_n[q_index], act_ph_n[q_index]], 1)
         q = q_func(q_input, 1, scope="q_func", num_units=num_units)[:,0]
         q_func_vars = U.scope_vars(U.absolute_scope_name("q_func"))
-        CNN_adv_vars=U.scope_vars("CNN-adv")
-        CNN_age_vars=U.scope_vars("CNN-age")
+        CNN_vars=U.scope_vars(U.absolute_scope_name("CNN"))
+        #CNN_age_vars=U.scope_vars("CNN-age")
 
         q_loss = tf.reduce_mean(tf.square(q - target_ph))
 
@@ -121,7 +145,7 @@ def q_train(make_obs_ph_n, act_space_n, q_index, q_func, shared_CNN,optimizer, m
         q_reg = tf.reduce_mean(tf.square(q))
         loss = q_loss #+ 1e-3 * q_reg
 
-        optimize_expr = U.minimize_and_clip(optimizer, loss, q_func_vars+CNN_adv_vars+CNN_age_vars, grad_norm_clipping)
+        optimize_expr = U.minimize_and_clip(optimizer, loss, q_func_vars+CNN_vars, grad_norm_clipping)
 
         # Create callable functions
         train = U.function(inputs=obs_ph_n + obs_map_ph_n+act_ph_n +[target_ph], outputs=loss, updates=[optimize_expr])

@@ -12,6 +12,7 @@ import maddpg.common.tf_util as U
 from maddpg.trainer.maddpg_m import MADDPGAgentTrainer
 import tensorflow.contrib.layers as layers
 
+flag=[1,1,1]
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
@@ -50,11 +51,25 @@ def mlp_model(input, num_outputs, scope, reuse=False, num_units=128, rnn_cell=No
         out = layers.fully_connected(out, num_outputs=num_outputs, activation_fn=None)
         return out
 
-def CNN_model(input, num_outputs=12, batch_size=10, reuse=tf.AUTO_REUSE):
+def CNN_model(input, index, scope="CNN",num_outputs=12, batch_size=10, reuse=True):
 
 
     # This model takes as input an observation and returns values of all actions
-    with tf.variable_scope(scope, reuse=reuse):
+    # try:
+    #     tf.get_variable(scope+"/conv2d/kernel")
+    #     scope_t.reuse_variables()
+    # except ValueError:
+    #     print("new")
+    global flag
+    reuse_t=True
+    #print(scope)
+    if flag[index]==1:
+        flag[index]=0
+        reuse_t=False
+
+    #print(flag,reuse_t)
+    with tf.variable_scope(scope, reuse=reuse_t) as scope_t:
+
         """Model function for CNN."""
         # Input Layer
         input_layer = tf.reshape(input,[-1, 56, 86, 1])
